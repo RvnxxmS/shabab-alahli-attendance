@@ -621,7 +621,12 @@ firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbDb = firebase.firestore();
 const AUTH_EMAIL = 'team@saa-attendance.app';
+// المستند الرئيسي فيه فقط أحداث الفريق (صغيرة الحجم)، وكل فرد له مستند مستقل ضمن
+// مجموعة فرعية people — لأن حجم بيانات الفريق كاملة كسجل نصي واحد يتجاوز حد 1MB
+// الذي تفرضه Firestore على المستند الواحد (بعض المرفقات مثل صور العقوبات كبيرة).
 const SYNC_DOC = fbDb.collection('attendance').doc('shared');
+const SYNC_PEOPLE = SYNC_DOC.collection('people');
+const MAX_DOC_BYTES = 900000; // هامش أمان تحت حد الـ 1MB لكل مستند في Firestore
 let applyingRemote = false;
 let appStarted = false;
 let syncUnsub = null;
@@ -636,21 +641,40 @@ function setSyncStatus(mode){
 async function pushToFirestore(){
   if(applyingRemote) return;
   try{
-    await SYNC_DOC.set({data: JSON.stringify(state), updatedAt: firebase.firestore.FieldValue.serverTimestamp()});
-    setSyncStatus('ok');
+    const existing = await SYNC_PEOPLE.get({source:'server'});
+    const localIds = new Set(state.people.map(p=>String(p.id)));
+    const oversized = [];
+    // Firestore batch محدودة بـ 500 عملية كتابة؛ نقسّم على دفعات لتبقى آمنة مع نمو البيانات
+    let batch = fbDb.batch(); let ops = 0;
+    async function flush(){ if(ops>0){ await batch.commit(); batch = fbDb.batch(); ops = 0; } }
+    for(const doc of existing.docs){
+      if(!localIds.has(doc.id)){ batch.delete(doc.ref); ops++; if(ops>=450) await flush(); }
+    }
+    for(const p of state.people){
+      const json = JSON.stringify(p);
+      if(json.length > MAX_DOC_BYTES){ oversized.push(p.nameAr||p.id); continue; }
+      batch.set(SYNC_PEOPLE.doc(String(p.id)), {json, updatedAt: firebase.firestore.FieldValue.serverTimestamp()});
+      ops++; if(ops>=450) await flush();
+    }
+    await flush();
+    await SYNC_DOC.set({teamEvents: JSON.stringify(state.teamEvents||[]), updatedAt: firebase.firestore.FieldValue.serverTimestamp()});
+    if(oversized.length) console.warn('تعذّرت مزامنة (حجم كبير جداً):', oversized.join('، '));
+    setSyncStatus(oversized.length ? 'err' : 'ok');
   }catch(e){ setSyncStatus('err'); }
 }
 
 async function pullOrSeedFirestore(){
   try{
-    const snap = await SYNC_DOC.get({source:'server'});
-    if(snap.exists && snap.data() && snap.data().data){
+    const peopleSnap = await SYNC_PEOPLE.get({source:'server'});
+    if(!peopleSnap.empty){
       applyingRemote = true;
       try{
-        const remote = JSON.parse(snap.data().data);
-        if(remote && Array.isArray(remote.people)){
-          state = remote;
-          if(!Array.isArray(state.teamEvents)) state.teamEvents=[];
+        const people = peopleSnap.docs.map(d=>{ try{ return JSON.parse(d.data().json); }catch(e){ return null; } }).filter(Boolean);
+        const metaSnap = await SYNC_DOC.get({source:'server'});
+        let teamEvents = [];
+        try{ if(metaSnap.exists && metaSnap.data().teamEvents) teamEvents = JSON.parse(metaSnap.data().teamEvents); }catch(e){}
+        if(people.length){
+          state = {people, teamEvents: Array.isArray(teamEvents)?teamEvents:[]};
           await storeSet(STORE_KEY, JSON.stringify(state));
         }
       }catch(e){}
@@ -665,17 +689,14 @@ async function pullOrSeedFirestore(){
 
 function startRealtimeSync(){
   if(syncUnsub) return;
-  syncUnsub = SYNC_DOC.onSnapshot({includeMetadataChanges:false}, snap=>{
+  const unsubPeople = SYNC_PEOPLE.onSnapshot({includeMetadataChanges:false}, snap=>{
     if(snap.metadata.hasPendingWrites) return; // تجاهل الصدى الناتج عن كتابتنا نحن
-    if(snap.metadata.fromCache) return; // تجاهل أي نسخة محلية مخزّنة مؤقتاً قد تكون قديمة، اعتمدي فقط على تأكيد الخادم
-    if(!snap.exists) return;
-    const d = snap.data();
-    if(!d || !d.data) return;
-    let remote;
-    try{ remote = JSON.parse(d.data); }catch(e){ return; }
-    if(!remote || !Array.isArray(remote.people)) return;
+    if(snap.metadata.fromCache) return; // اعتمدي فقط على تأكيد الخادم، لا نسخة محلية قديمة
+    let people;
+    try{ people = snap.docs.map(d=>JSON.parse(d.data().json)); }catch(e){ return; }
+    if(!people.length) return; // لا تُفرّغي البيانات المحلية بسبب لقطة فارغة عابرة
     applyingRemote = true;
-    state = remote;
+    state.people = people;
     if(!Array.isArray(state.teamEvents)) state.teamEvents=[];
     storeSet(STORE_KEY, JSON.stringify(state)).finally(()=>{
       applyingRemote = false;
@@ -683,6 +704,17 @@ function startRealtimeSync(){
       if(typeof render==='function') render();
     });
   }, ()=>{ setSyncStatus('err'); });
+  const unsubMeta = SYNC_DOC.onSnapshot({includeMetadataChanges:false}, snap=>{
+    if(snap.metadata.hasPendingWrites || snap.metadata.fromCache) return;
+    if(!snap.exists) return;
+    const d = snap.data();
+    if(!d || !d.teamEvents) return;
+    try{
+      const te = JSON.parse(d.teamEvents);
+      if(Array.isArray(te)){ state.teamEvents = te; if(typeof render==='function') render(); }
+    }catch(e){}
+  }, ()=>{});
+  syncUnsub = ()=>{ unsubPeople(); unsubMeta(); };
 }
 
 function showAuthGate(msg){
