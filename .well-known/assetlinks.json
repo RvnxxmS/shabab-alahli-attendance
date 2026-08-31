@@ -1,0 +1,8 @@
+[{
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+          "namespace": "android_app",
+          "package_name": "io.github.rvnxxms.saaattendance",
+          "sha256_cert_fingerprints": ["3D:42:03:99:6B:50:EA:62:A8:BF:62:DD:0B:3D:98:D8:94:23:41:60:7F:55:F2:83:29:F7:EA:A4:28:E1:DE:BA"]
+    }
+}]
