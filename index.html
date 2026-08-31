@@ -576,7 +576,7 @@ let fileHandle=null, autoSaveOn=false, autoSavePending=false, writing=false, wri
 const FS_SUPPORTED = !!(window.showSaveFilePicker && window.showOpenFilePicker);
 function payloadNow(){return {app:'SAA-Attendance',version:3,exportedAt:new Date().toISOString(),peopleCount:state.people.length,recordCount:state.people.reduce((a,p)=>a+p.records.length,0),state:state};}
 /* IndexedDB لحفظ مقبض الملف بين البرامج */
-function idb(mode,fn){return new Promise((res,rej)=>{const o=indexedDB.open('saa_fs',1);o.onupgradeneeded=()=>{try{o.result.createObjectStore('h');}catch(e){}};o.onsuccess=()=>{const db=o.result;let out;try{const tx=db.transaction('h',mode);const st=tx.objectStore('h');out=fn(st);tx.oncomplete=()=>{db.close();res(out&&out.result!==undefined?out.result:out);};tx.onerror=()=>{db.close();rej(tx.error);};}catch(e){db.close();rej(e);}};o.onerror=()=>rej(o.error);});}
+function idb(mode,fn){return new Promise((res,rej)=>{const o=indexedDB.open('saa_attendance_fs',1);o.onupgradeneeded=()=>{try{o.result.createObjectStore('h');}catch(e){}};o.onsuccess=()=>{const db=o.result;let out;try{const tx=db.transaction('h',mode);const st=tx.objectStore('h');out=fn(st);tx.oncomplete=()=>{db.close();res(out&&out.result!==undefined?out.result:out);};tx.onerror=()=>{db.close();rej(tx.error);};}catch(e){db.close();rej(e);}};o.onerror=()=>rej(o.error);});}
 async function saveHandle(){try{await idb('readwrite',st=>st.put(fileHandle,'autosave'));}catch(e){}}
 async function loadHandle(){try{return await idb('readonly',st=>st.get('autosave'));}catch(e){return null;}}
 async function clearHandle(){try{await idb('readwrite',st=>st.delete('autosave'));}catch(e){}}
