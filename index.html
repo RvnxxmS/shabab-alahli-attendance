@@ -620,7 +620,6 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const fbAuth = firebase.auth();
 const fbDb = firebase.firestore();
-try{ fbDb.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
 const AUTH_EMAIL = 'team@saa-attendance.app';
 const SYNC_DOC = fbDb.collection('attendance').doc('shared');
 let applyingRemote = false;
@@ -644,7 +643,7 @@ async function pushToFirestore(){
 
 async function pullOrSeedFirestore(){
   try{
-    const snap = await SYNC_DOC.get();
+    const snap = await SYNC_DOC.get({source:'server'});
     if(snap.exists && snap.data() && snap.data().data){
       applyingRemote = true;
       try{
@@ -666,8 +665,9 @@ async function pullOrSeedFirestore(){
 
 function startRealtimeSync(){
   if(syncUnsub) return;
-  syncUnsub = SYNC_DOC.onSnapshot(snap=>{
+  syncUnsub = SYNC_DOC.onSnapshot({includeMetadataChanges:false}, snap=>{
     if(snap.metadata.hasPendingWrites) return; // تجاهل الصدى الناتج عن كتابتنا نحن
+    if(snap.metadata.fromCache) return; // تجاهل أي نسخة محلية مخزّنة مؤقتاً قد تكون قديمة، اعتمدي فقط على تأكيد الخادم
     if(!snap.exists) return;
     const d = snap.data();
     if(!d || !d.data) return;
@@ -794,6 +794,7 @@ async function linkExistingFile(){
     const st=(pl&&pl.state&&pl.state.people)?pl.state:((pl&&pl.people)?pl:null);
     if(st&&Array.isArray(st.people))state=st;
     autoSaveOn=true;autoSavePending=false;await writeToFile();await saveHandle();
+    if(typeof pushToFirestore==='function')pushToFirestore();
     resetViewsAfterLoad();updateAutoSaveUI();closePrompt();
     toast('تم ربط الملف وتحميل بياناته وتفعيل الحفظ التلقائي');
   }catch(e){autoSaveErr(e);}
@@ -814,6 +815,7 @@ async function resumeAutoSave(){
     const st=(pl&&pl.state&&pl.state.people)?pl.state:((pl&&pl.people)?pl:null);
     if(st&&Array.isArray(st.people))state=st;
     autoSaveOn=true;autoSavePending=false;resetViewsAfterLoad();updateAutoSaveUI();closePrompt();
+    if(typeof pushToFirestore==='function')pushToFirestore();
     toast('تم استئناف الحفظ التلقائي وتحميل أحدث بيانات من الملف');
   }catch(e){
     toast('تعذّرت قراءة الملف (قد يكون محذوفاً أو منقولاً) — أعد ربطه من القائمة',true);
@@ -2446,6 +2448,7 @@ function handleImportFile(file){
     $('confirmImport').onclick=async()=>{
       state=st;
       try{await storeSet(STORE_KEY,JSON.stringify(state));}catch(e){}
+      if(typeof pushToFirestore==='function')pushToFirestore();
       closePrompt();
       currentTab='staff';activeFilters.clear();filterFrom='';filterTo='';
       document.querySelectorAll('.chip-f').forEach(c=>c.classList.remove('active'));
@@ -2478,6 +2481,7 @@ $('clearFilterBtn').onclick=()=>{activeFilters.clear();filterFrom='';filterTo=''
 $('saveAllBtn').onclick=async()=>{
   const b=$('saveAllBtn');
   try{ await storeSet(STORE_KEY,JSON.stringify(state)); }catch(e){}
+  if(typeof pushToFirestore==='function')pushToFirestore();
   if(autoSaveOn){ await writeToFile(); }
   const orig=b.innerHTML;
   b.classList.add('saved');
